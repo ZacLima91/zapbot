@@ -1,192 +1,161 @@
 // dependências
 const express = require("express");
-const qrcode = require("qrcode");
-const {
-  Client,
-  LocalAuth,
-  Buttons,
-  List,
-  MessageMedia,
-} = require("whatsapp-web.js");
+const qrcode = require("qrcode-terminal"); // <- agora usa terminal
+const { Client, LocalAuth } = require("whatsapp-web.js");
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// variável global para guardar o QR atual
-let qrCodeData = null;
+// Simulando vagas por dia
+let vagas = {
+  "10/08": 5,
+  "12/08": 3,
+  "15/08": 0,
+};
+
+// Para armazenar sessões de usuário (em memória)
+let usuarios = {};
 
 // inicializa o cliente WhatsApp
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: "./session" }),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu'
-        ]
-    }
+  puppeteer: {
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--no-first-run",
+      "--no-zygote",
+      "--single-process",
+      "--disable-gpu",
+    ],
+  },
 });
 
-// serviço de leitura do qr code
-client.on("qr", async (qr) => {
-  qrCodeData = await qrcode.toDataURL(qr); // converte para imagem base64
-  console.log("📲 QRCode gerado, acesse http://localhost:" + port);
+// QR Code apenas no terminal
+client.on("qr", (qr) => {
+  qrcode.generate(qr, { small: true });
+  console.log("📲 Escaneie o QRCode acima para conectar o WhatsApp");
 });
 
-// quando o WhatsApp conectar
+// WhatsApp pronto
 client.on("ready", () => {
-  console.log("✅ Tudo certo! WhatsApp conectado.");
-  qrCodeData = null; // limpa o QRCode
+  console.log("✅ WhatsApp conectado!");
 });
 
-// inicializa
 client.initialize();
 
-// função de delay
+// delay
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 // ----------------- FUNIL DE MENSAGENS -----------------
 client.on("message", async (msg) => {
-  if (
-    msg.body.match(/(menu|Menu|dia|tarde|noite|oi|Oi|Olá|olá|ola|Ola)/i) &&
-    msg.from.endsWith("@c.us")
-  ) {
-    const chat = await msg.getChat();
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    const contact = await msg.getContact();
-    const name = contact.pushname;
-    await client.sendMessage(
-      msg.from,
-      `Olá, ${name.split(" ")[0]}! Sou o assistente virtual do consultório de Dra. Ana Barbosa. Como posso ajudá-lo(a) hoje? 
-Por favor, digite uma das opções abaixo:
+  if (!msg.from.endsWith("@c.us")) return;
 
-1 - Como funciona
-2 - Valores dos planos
-3 - Benefícios
-4 - Como aderir
-5 - Outras perguntas`
+  const numero = msg.from;
+  const texto = msg.body.trim();
+  const chat = await msg.getChat();
+  const contact = await msg.getContact();
+  const nome = contact.pushname ? contact.pushname.split(" ")[0] : "Paciente";
+
+  await chat.sendStateTyping();
+  await delay(2000);
+
+  // === Primeiro contato / menu principal ===
+  if (!usuarios[numero]) {
+    usuarios[numero] = { estado: "menu" };
+    await chat.sendMessage(
+      `Olá, ${nome}! Sou o assistente virtual do consultório de Dra. Ana Barbosa. Sobre o que deseja falar?\n\n` +
+        `1️⃣ Agendamento de consulta\n` +
+        `2️⃣ Remarcação de consulta\n` +
+        `3️⃣ Resultado de exames\n` +
+        `4️⃣ Outros assuntos`
     );
-    await delay(3000);
-    await chat.sendStateTyping();
+    return;
   }
 
-  if (msg.body === "1" && msg.from.endsWith("@c.us")) {
-    const chat = await msg.getChat();
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(
-      msg.from,
-      "Nosso serviço oferece consultas médicas 24 horas por dia, 7 dias por semana, diretamente pelo WhatsApp.\n\nNão há carência, o que significa que você pode começar a usar nossos serviços imediatamente após a adesão.\n\nOferecemos atendimento médico ilimitado, receitas\n\nAlém disso, temos uma ampla gama de benefícios, incluindo acesso a cursos gratuitos"
-    );
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(
-      msg.from,
-      "COMO FUNCIONA?\nÉ muito simples.\n\n1º Passo\nFaça seu cadastro e escolha o plano que desejar.\n\n2º Passo\nApós efetuar o pagamento do plano escolhido você já terá acesso a nossa área exclusiva para começar seu atendimento na mesma hora.\n\n3º Passo\nSempre que precisar"
-    );
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(msg.from, "Link para cadastro: https://site.com");
+  const estado = usuarios[numero].estado;
+
+  // === Menu principal ===
+  if (estado === "menu") {
+    if (texto === "1") {
+      usuarios[numero].estado = "agendamento";
+      let diasDisponiveis = Object.entries(vagas)
+        .filter(([dia, qtd]) => qtd > 0)
+        .map(([dia, qtd]) => `${dia} - ${qtd} vagas`)
+        .join("\n");
+      await chat.sendMessage(
+        `🗓️ Dias disponíveis:\n${diasDisponiveis}\n\nPor favor, responda com a data desejada.`
+      );
+      return;
+    } else if (texto === "2") {
+      await chat.sendMessage("🔁 Em breve entraremos em contato com as datas disponíveis.");
+      return;
+    } else if (texto === "3") {
+      usuarios[numero].estado = "aguardando_nome_exame";
+      await chat.sendMessage("📋 Informe seu nome completo para enviarmos os exames.");
+      return;
+    } else if (texto === "4") {
+      usuarios[numero].estado = "outros_assuntos";
+      await chat.sendMessage(
+        "✉️ Informe o assunto que deseja tratar e retornaremos em breve."
+      );
+      return;
+    } else {
+      await chat.sendMessage("❌ Opção inválida. Responda com 1, 2, 3 ou 4.");
+      return;
+    }
   }
 
-  if (msg.body === "2" && msg.from.endsWith("@c.us")) {
-    const chat = await msg.getChat();
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(
-      msg.from,
-      "*Plano Individual:* R$22,50 por mês.\n\n*Plano Família:* R$39,90 por mês, inclui você mais 3 dependentes.\n\n*Plano TOP Individual:* R$42,50 por mês, com benefícios adicionais como\n\n*Plano TOP Família:* R$79,90 por mês, inclui você mais 3 dependentes"
-    );
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(msg.from, "Link para cadastro: https://site.com");
+  // === Agendamento ===
+  if (estado === "agendamento") {
+    if (vagas[texto] && vagas[texto] > 0) {
+      vagas[texto] -= 1;
+      usuarios[numero].estado = "aguardando_confirmacao";
+      usuarios[numero].dia_escolhido = texto;
+      await chat.sendMessage(
+        `✅ Você escolheu o dia ${texto}. Aguardando a confirmação do seu agendamento.`
+      );
+    } else {
+      await chat.sendMessage(
+        "❌ Data inválida ou sem vagas. Por favor, escolha outra data."
+      );
+    }
+    return;
   }
 
-  if (msg.body === "3" && msg.from.endsWith("@c.us")) {
-    const chat = await msg.getChat();
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(
-      msg.from,
-      "Sorteio de prêmios todo ano.\n\nAtendimento médico ilimitado 24h por dia.\n\nReceitas de medicamentos"
-    );
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(msg.from, "Link para cadastro: https://site.com");
+  // === Resultado de exames ===
+  if (estado === "aguardando_nome_exame") {
+    usuarios[numero].nome_exame = texto;
+    usuarios[numero].estado = "menu";
+    await chat.sendMessage("📨 Obrigado! Em breve você receberá seus exames.");
+    return;
   }
 
-  if (msg.body === "4" && msg.from.endsWith("@c.us")) {
-    const chat = await msg.getChat();
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(
-      msg.from,
-      "Você pode aderir aos nossos planos diretamente pelo nosso site ou pelo WhatsApp.\n\nApós a adesão, você terá acesso imediato"
+  // === Outros assuntos ===
+  if (estado === "outros_assuntos") {
+    usuarios[numero].assunto = texto;
+    usuarios[numero].estado = "menu";
+    await chat.sendMessage(
+      "📌 Obrigado! Seu assunto foi registrado. Retornaremos em breve."
     );
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(msg.from, "Link para cadastro: https://site.com");
-  }
-
-  if (msg.body === "5" && msg.from.endsWith("@c.us")) {
-    const chat = await msg.getChat();
-    await delay(3000);
-    await chat.sendStateTyping();
-    await delay(3000);
-    await client.sendMessage(
-      msg.from,
-      "Se você tiver outras dúvidas ou precisar de mais informações, por favor, fale aqui nesse WhatsApp ou visite nosso site: https://site.com"
-    );
+    return;
   }
 });
 
-// ----------------- FRONTEND HTML -----------------
 app.get("/", (req, res) => {
-  if (qrCodeData) {
-    res.send(`
-      <html>
-        <head>
-          <title>Conectar WhatsApp</title>
-        </head>
-        <body style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;font-family:sans-serif;">
-          <h2>Escaneie o QRCode abaixo no seu WhatsApp</h2>
-          <img src="${qrCodeData}" />
-        </body>
-      </html>
-    `);
-  } else {
-    res.send(`
-      <html>
-        <head>
-          <title>WhatsApp</title>
-        </head>
-        <body style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
-          <h2>✅ WhatsApp já conectado!</h2>
-        </body>
-      </html>
-    `);
-  }
+  res.send(`
+    <html>
+      <head><title>WhatsApp Bot</title></head>
+      <body style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
+        <h2>✅ WhatsApp rodando. Confira o terminal para o QRCode.</h2>
+      </body>
+    </html>
+  `);
 });
 
 app.listen(port, () => {
   console.log(`🚀 Servidor rodando em http://localhost:${port}`);
 });
-
-
